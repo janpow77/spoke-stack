@@ -1,0 +1,50 @@
+# AMD-ROCm-Override fuer Spoke-Stack. Aufruf:
+#   docker compose -f compose.yaml -f compose.amd.yaml up -d
+#
+# Voraussetzung:
+#   - AMD-GPU (z.B. Radeon 8060S / gfx1151 / Strix Halo)
+#   - ROCm 6.x auf dem Host (Kernel-Driver + /dev/kfd + /dev/dri)
+#   - Docker mit user in video/render Groups
+#
+# Bootstrap.sh erkennt AMD-GPU automatisch via `rocminfo` und nutzt diesen
+# Override statt `compose.gpu.yaml` (das ist NVIDIA-only).
+
+services:
+  ollama:
+    # ROCm-build statt Standard-CUDA. Bei brandneuen GFX-Targets (gfx1151
+    # Strix Halo) braucht es zusaetzlich HSA_OVERRIDE_GFX_VERSION, weil
+    # ROCm noch keine offizielle Unterstuetzung hat.
+    image: ollama/ollama:rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    # Sicherheitskontext: ROCm benoetigt Zugriff auf KFD-Compute-IOMMU.
+    # `cap_add: SYS_PTRACE` ist fuer GPU-Profiling — nur wenn rocm-tools
+    # ausgefuehrt werden sollen; default off.
+    environment:
+      # gfx1151 (Strix Halo, AMD Ryzen AI MAX+) ist seit ROCm 6.4 supported,
+      # aelteres ROCm braucht GFX-Override auf eine kompatible Architektur.
+      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-11.5.1}"
+      # Bei Unified-Memory-APU: VRAM = ein Teil des System-RAMs. Hier
+      # explizit ein VRAM-Pool reservieren (default 50% des RAMs).
+      HSA_AMD_GPU_PRIORITY: "${HSA_AMD_GPU_PRIORITY:-1}"
+      ROCR_VISIBLE_DEVICES: "${ROCR_VISIBLE_DEVICES:-0}"
+
+  reranker-service:
+    # Reranker auf CPU lassen — Cross-Encoder ist klein, ROCm-Support fuer
+    # transformers ist heikel. CPU reicht (~30ms pro Pair-Batch).
+    environment:
+      RERANKER_DEVICE: "cpu"
+
+  # vision-service:
+  #   image: ollama/ollama:rocm   # ggf. eigenen ROCm-Build fuer Donut
+  #   devices:
+  #     - /dev/kfd
+  #     - /dev/dri
+  #   group_add: [video, render]
+  #   environment:
+  #     VISION_DEVICE: "cuda"   # ROCm wird via HSA als "cuda" maskiert
+  #     HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-11.5.1}"

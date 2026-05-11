@@ -62,11 +62,16 @@ if [[ -f "$REPO_DIR/compose.gpu.yaml" ]]; then
     $SUDO cp "$REPO_DIR/compose.gpu.yaml" "$ETC_DIR/compose.gpu.yaml"
 fi
 
-# GPU-Detection: nvidia-smi vorhanden → GPU-Override automatisch nutzen.
+# GPU-Detection: NVIDIA / AMD-ROCm / Intel / CPU-only
 COMPOSE_ARGS=("-f" "$ETC_DIR/compose.yaml")
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
-    echo "INFO: NVIDIA-GPU erkannt — mit compose.gpu.yaml mergen."
+    echo "INFO: NVIDIA-GPU erkannt — compose.gpu.yaml mergen."
+    $SUDO cp -f "$REPO_DIR/compose.gpu.yaml" "$ETC_DIR/compose.gpu.yaml"
     COMPOSE_ARGS+=("-f" "$ETC_DIR/compose.gpu.yaml")
+elif command -v rocminfo >/dev/null 2>&1 && rocminfo 2>/dev/null | grep -q "GPU Agent"; then
+    echo "INFO: AMD-GPU (ROCm) erkannt — compose.amd.yaml mergen."
+    $SUDO cp -f "$REPO_DIR/compose.amd.yaml" "$ETC_DIR/compose.amd.yaml"
+    COMPOSE_ARGS+=("-f" "$ETC_DIR/compose.amd.yaml")
 fi
 
 echo "INFO: docker compose ${COMPOSE_ARGS[*]} up -d"
