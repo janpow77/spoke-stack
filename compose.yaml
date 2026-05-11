@@ -21,11 +21,17 @@ services:
     ports:
       - "${OLLAMA_BIND:-0.0.0.0}:11434:11434"
     environment:
-      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-10m}"
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-24h}"
       OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-2}"
+      OLLAMA_MAX_LOADED_MODELS: "${OLLAMA_MAX_LOADED_MODELS:-2}"
       OLLAMA_FLASH_ATTENTION: "${OLLAMA_FLASH_ATTENTION:-1}"
+      OLLAMA_NUM_CTX: "${OLLAMA_NUM_CTX:-8192}"
+      OLLAMA_HOST: "${OLLAMA_HOST:-0.0.0.0}"
     volumes:
-      - /var/lib/ollama:/root/.ollama
+      # Adopted-Volume-Migration: existing systemd-Ollama liegt typisch in
+      # /usr/share/ollama/.ollama oder /var/lib/ollama. bootstrap.sh
+      # erkennt das und setzt OLLAMA_DATA_DIR entsprechend.
+      - ${OLLAMA_DATA_DIR:-/var/lib/ollama}:/root/.ollama
     env_file:
       - path: /var/lib/spoke-agent/services/ollama.env
         required: false
