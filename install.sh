@@ -45,6 +45,17 @@ else
     echo "INFO: $ETC_DIR/env existiert bereits — nicht ueberschrieben."
 fi
 
+# Hartstop wenn Template-Platzhalter noch drin sind. Schuetzt davor, dass
+# Ollama mit Default-Bind 0.0.0.0 ohne Auth ans LAN exposed wird oder das
+# Vault-Token nie ersetzt wurde.
+if $SUDO grep -qE "^[A-Z_]+=CHANGEME" "$ETC_DIR/env"; then
+    echo ""
+    echo "ABORT: $ETC_DIR/env enthaelt noch CHANGEME-Platzhalter. Bitte"
+    echo "       editieren und Tokens/API-Keys setzen, dann install.sh erneut starten." >&2
+    $SUDO grep -nE "^[A-Z_]+=CHANGEME" "$ETC_DIR/env" >&2
+    exit 2
+fi
+
 # Compose-Datei nach /etc kopieren (read-only Bind im spoke-agent-Container).
 $SUDO cp "$REPO_DIR/compose.yaml" "$ETC_DIR/compose.yaml"
 if [[ -f "$REPO_DIR/compose.gpu.yaml" ]]; then
