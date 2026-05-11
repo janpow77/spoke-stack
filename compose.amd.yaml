@@ -36,6 +36,22 @@ services:
       # explizit ein VRAM-Pool reservieren (default 50% des RAMs).
       HSA_AMD_GPU_PRIORITY: "${HSA_AMD_GPU_PRIORITY:-1}"
       ROCR_VISIBLE_DEVICES: "${ROCR_VISIBLE_DEVICES:-0}"
+      # UMA-Optimierungen Strix-Halo:
+      # - SDMA-Copy-Engine auf APUs disablen (kopiert in derselben DDR5-Domain wie
+      #   CPU-Memcpy → Bus-Contention).
+      HSA_ENABLE_SDMA: "${HSA_ENABLE_SDMA:-0}"
+      HSA_AMD_HUGEPAGE: "${HSA_AMD_HUGEPAGE:-1}"
+      # Ollama-Tuning fuer Strix-Halo:
+      # - KV-Cache q8_0 halbiert VRAM-Footprint ohne sichtbare Qualitaetsverluste
+      #   (FLASH_ATTENTION ist Pflicht dafuer).
+      # - NUM_PARALLEL=2 statt 4: bei UMA-VRAM macht 4 Slots × 4 Modelle = 16 KV-
+      #   Eintraege Memory-Pressure.
+      OLLAMA_FLASH_ATTENTION: "${OLLAMA_FLASH_ATTENTION:-1}"
+      OLLAMA_KV_CACHE_TYPE: "${OLLAMA_KV_CACHE_TYPE:-q8_0}"
+      OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-2}"
+      OLLAMA_MAX_LOADED_MODELS: "${OLLAMA_MAX_LOADED_MODELS:-4}"
+      OLLAMA_CONTEXT_LENGTH: "${OLLAMA_CONTEXT_LENGTH:-8192}"
+      OLLAMA_NUM_BATCH: "${OLLAMA_NUM_BATCH:-256}"
 
   reranker-service:
     # Reranker auf CPU lassen — Cross-Encoder ist klein, ROCm-Support fuer
