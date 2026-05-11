@@ -59,12 +59,19 @@ services:
     environment:
       RERANKER_DEVICE: "cpu"
 
-  # vision-service:
-  #   image: ollama/ollama:rocm   # ggf. eigenen ROCm-Build fuer Donut
-  #   devices:
-  #     - /dev/kfd
-  #     - /dev/dri
-  #   group_add: [video, render]
-  #   environment:
-  #     VISION_DEVICE: "cuda"   # ROCm wird via HSA als "cuda" maskiert
-  #     HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-11.5.1}"
+  vision-service:
+    # ROCm-Override fuer Donut. Aktuelles ghcr.io/janpow77/vision-service Image
+    # ist CPU-only — Donut laeuft trotzdem (~3-5s/Seite auf 16-core CPU). Sobald
+    # ein ROCm-Image gebaut ist, hier image-Override setzen.
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-993}"
+    environment:
+      # VISION_DEVICE: "cuda" maskiert ROCm als CUDA-Device, sobald das torch+
+      # rocm-Image vorhanden ist. Bis dahin "cpu" via /etc/spoke-stack/env.
+      VISION_DEVICE: "${VISION_DEVICE:-cpu}"
+      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-11.5.1}"
+      HSA_ENABLE_SDMA: "${HSA_ENABLE_SDMA:-0}"

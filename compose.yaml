@@ -81,33 +81,34 @@ services:
         max-file: "3"
 
   # ----------------------------------------------------------- vision-service
-  # PLACEHOLDER — wird vom parallelen Agenten gebaut. Kommentiert bis Image
-  # auf dem GHCR liegt. Nicht aus dem Stack loeschen — spoke-agent erwartet
-  # einen :8005-Service mit /health.
-  #
-  # vision-service:
-  #   image: ghcr.io/janpow77/vision-service:${VISION_TAG:-latest}
-  #   container_name: vision-service
-  #   restart: unless-stopped
-  #   environment:
-  #     VISION_PORT: "8005"
-  #     VISION_DEVICE: "${VISION_DEVICE:-cpu}"
-  #     VISION_API_KEY: "${VISION_API_KEY:-}"
-  #     HF_HOME: "/data/hf_cache"
-  #   env_file:
-  #     - path: /var/lib/spoke-agent/services/vision-service.env
-  #       required: false
-  #   volumes:
-  #     - /var/lib/vision/data:/data
-  #   ports:
-  #     - "${VISION_BIND:-0.0.0.0}:8005:8005"
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8005/health"]
-  #     interval: 30s
-  #     timeout: 5s
-  #     retries: 3
-  #     start_period: 120s
-  #   mem_limit: 6g
+  # Donut (CORD-v2) + Tesseract/EasyOCR. Spoke-agent erwartet :8005/health.
+  # ROCm-Override in compose.amd.yaml (HSA + /dev/kfd + /dev/dri).
+  vision-service:
+    image: ghcr.io/janpow77/vision-service:${VISION_TAG:-latest}
+    container_name: vision-service
+    restart: unless-stopped
+    environment:
+      VISION_PORT: "8005"
+      VISION_DEVICE: "${VISION_DEVICE:-cpu}"
+      VISION_API_KEY: "${VISION_API_KEY:-}"
+      HF_HOME: "/data/hf_cache"
+      # Donut-Default ist Q4 ~810 MB. Erste Inferenz triggert Modell-
+      # Download (etwa 1-3 GB von HuggingFace).
+      DONUT_DEFAULT_MODEL: "${DONUT_DEFAULT_MODEL:-naver-clova-ix/donut-base-finetuned-cord-v2}"
+    env_file:
+      - path: /var/lib/spoke-agent/services/vision-service.env
+        required: false
+    volumes:
+      - /var/lib/vision/data:/data
+    ports:
+      - "${VISION_BIND:-0.0.0.0}:8005:8005"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8005/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s   # erste Cold-Load des Donut-Models kann 60-120s dauern
+    mem_limit: 8g
 
   # ---------------------------------------------------------------- spoke-agent
   spoke-agent:
