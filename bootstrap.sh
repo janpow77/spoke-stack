@@ -396,16 +396,49 @@ prepare_config() {
 pre_migration() {
     if [[ $ADOPT_OLLAMA_WAS_ACTIVE -eq 1 ]]; then
         log "──────────────  Adopt-Migration  ──────────────"
-        log "Stoppe + disable Host-Ollama-Service (Modelle bleiben in $ADOPT_OLLAMA_DIR)…"
-        $SUDO systemctl stop ollama || true
-        $SUDO systemctl disable ollama 2>/dev/null || true
+        log "Stoppe + disable ALLE Host-Ollama-Services (Modelle bleiben in $ADOPT_OLLAMA_DIR)…"
+        # Curl-installer von ollama.com legt nicht nur ollama.service an, sondern
+        # auch ollama-healthcheck.{service,timer} und ollama-preload.service.
+        # Wenn wir nur "ollama" disablen, starten die Helper-Units es bei
+        # naechstem Boot wieder, kapern Port 11434 und der Container bleibt
+        # zwar healthy aber inaktiv (Service-Konflikt). Daher: alle finden.
+        local ollama_units
+        ollama_units=$($SUDO systemctl list-unit-files 2>/dev/null | awk '/^ollama/{print $1}' | tr '\n' ' ')
+        if [[ -n "$ollama_units" ]]; then
+            log "Gefundene Units: $ollama_units"
+            for unit in $ollama_units; do
+                $SUDO systemctl stop "$unit" 2>/dev/null || true
+                $SUDO systemctl disable "$unit" 2>/dev/null || true
+            done
+        else
+            $SUDO systemctl stop ollama || true
+            $SUDO systemctl disable ollama 2>/dev/null || true
+        fi
+        # Sicherheitshalber Unit-Files auch entfernen — sonst koennte ein
+        # apt-Upgrade oder daemon-reload sie reaktivieren.
+        $SUDO rm -f /etc/systemd/system/ollama*.service \
+                    /etc/systemd/system/ollama*.timer \
+                    /etc/systemd/system/multi-user.target.wants/ollama*.service \
+                    2>/dev/null || true
+        $SUDO rm -rf /etc/systemd/system/ollama.service.d 2>/dev/null || true
+        $SUDO systemctl daemon-reload 2>/dev/null || true
+        # Binary entfernen falls vorhanden — sonst koennte ein User es manuell
+        # starten und den Container-Port kapern.
+        if [[ -x /usr/local/bin/ollama ]]; then
+            log "Entferne Host-Ollama-Binary /usr/local/bin/ollama (Modelle bleiben in $ADOPT_OLLAMA_DIR)…"
+            $SUDO rm -f /usr/local/bin/ollama
+        fi
         ROLLBACK_NEEDED=1
         # Warte bis Port 11434 frei (max 10s)
         for i in {1..10}; do
             ss -tlnp 2>/dev/null | grep -qE ":11434\s" || break
             sleep 1
         done
-        ok "Host-Ollama gestoppt + disabled."
+        if ss -tlnp 2>/dev/null | grep -qE ":11434\s"; then
+            warn "Port 11434 immer noch belegt nach Service-Stop. Container-Start wird scheitern!"
+        else
+            ok "Host-Ollama vollstaendig deaktiviert (Units stopped+disabled+removed, Binary entfernt)."
+        fi
     fi
 }
 
