@@ -166,7 +166,7 @@ detect_gpu() {
                 *) warn "nvidia-container-toolkit manuell installieren" ;;
             esac
         fi
-    elif command -v rocminfo >/dev/null 2>&1 && rocminfo 2>/dev/null | grep -q "GPU Agent"; then
+    elif command -v rocminfo >/dev/null 2>&1 && rocminfo 2>/dev/null | grep -qE 'gfx[0-9]+'; then
         HAS_AMD=1
         GPU_TYPE="amd"
         GFX_VERSION=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]+' | head -1)
@@ -307,15 +307,26 @@ prepare_config() {
             *)      SPOKE_TAGS="cpu,linux" ;;
         esac
     fi
-    # Codex-Befund P1: Spoke-Agent ist host-network und probiert
-    # 127.0.0.1:11434 etc. — wenn wir nur auf Tailscale-IP binden,
-    # erreicht spoke-agent die Services NICHT. Lösung: 0.0.0.0 als
-    # Default; mit Docker's default-firewall + Tailscale-only-DNS bleibt
-    # das praktisch nur im Tailnet erreichbar. User kann explizit auf
-    # Tailscale-IP setzen, wenn er es will (verbleibt in .env).
+    # Bind-Adressen — Codex hat zwei sich widersprechende P1 gefunden:
+    #   - 127.0.0.1 only: spoke-agent (host-network) erreicht zwar localhost,
+    #     aber Router von CCX23 erreicht den Spoke nicht im Tailnet.
+    #   - 0.0.0.0: Inference-API auch im LAN erreichbar (kein Auth in ollama!).
+    #
+    # Pragmatischer Default: 0.0.0.0 + Firewall-Lockdown auf Tailscale-Range.
+    # Wir aktivieren ufw automatisch wenn vorhanden:
     : "${OLLAMA_BIND:=0.0.0.0}"
     : "${RERANKER_BIND:=0.0.0.0}"
     : "${VISION_BIND:=0.0.0.0}"
+    if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -q "Status: active"; then
+        log "ufw aktiv — beschraenke Spoke-Ports auf Tailscale-Range 100.64.0.0/10…"
+        for p in 11434 8004 8005 7844; do
+            $SUDO ufw allow from 100.64.0.0/10 to any port "$p" comment "spoke-stack" >/dev/null 2>&1 || true
+            $SUDO ufw deny in to any port "$p" comment "spoke-stack-deny-default" >/dev/null 2>&1 || true
+        done
+        ok "ufw konfiguriert: Spoke-Ports nur aus Tailscale-Range (100.64.0.0/10)."
+    else
+        warn "ufw nicht aktiv — Inference-Ports sind LAN-erreichbar! Bitte 'sudo ufw enable' + spoke-stack-Regeln."
+    fi
 
     set_kv SPOKE_NAME "$SPOKE_NAME"
     set_kv SPOKE_TAGS "$SPOKE_TAGS"
@@ -482,11 +493,12 @@ validate_deploy() {
     # Admin-Token haben, ist der Check best-effort — kein hartes Fail.
     sleep 15
     local url="${ROUTER_URL:-http://100.99.159.80:7842}"
-    local raw_spokes registered="" auth_header=""
+    local raw_spokes registered=""
+    local -a auth_args=()
     if [[ -n "${ROUTER_ADMIN_TOKEN:-}" ]]; then
-        auth_header="-H Authorization: Bearer ${ROUTER_ADMIN_TOKEN}"
+        auth_args=(-H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}")
     fi
-    raw_spokes=$(curl -s --max-time 5 $auth_header "${url}/admin/api/spokes" 2>/dev/null || true)
+    raw_spokes=$(curl -s --max-time 5 "${auth_args[@]}" "${url}/admin/api/spokes" 2>/dev/null || true)
     if [[ -n "$raw_spokes" && "${raw_spokes:0:1}" == "[" ]]; then
         registered=$(echo "$raw_spokes" | jq -r --arg n "$SPOKE_NAME" '.[]? | select(.name==$n) | "\(.status)|\(.source)"' 2>/dev/null | head -1 || true)
         if [[ -n "$registered" ]]; then
