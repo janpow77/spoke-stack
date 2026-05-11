@@ -307,9 +307,15 @@ prepare_config() {
             *)      SPOKE_TAGS="cpu,linux" ;;
         esac
     fi
-    : "${OLLAMA_BIND:=$TS_IP}"
-    : "${RERANKER_BIND:=$TS_IP}"
-    : "${VISION_BIND:=$TS_IP}"
+    # Codex-Befund P1: Spoke-Agent ist host-network und probiert
+    # 127.0.0.1:11434 etc. — wenn wir nur auf Tailscale-IP binden,
+    # erreicht spoke-agent die Services NICHT. Lösung: 0.0.0.0 als
+    # Default; mit Docker's default-firewall + Tailscale-only-DNS bleibt
+    # das praktisch nur im Tailnet erreichbar. User kann explizit auf
+    # Tailscale-IP setzen, wenn er es will (verbleibt in .env).
+    : "${OLLAMA_BIND:=0.0.0.0}"
+    : "${RERANKER_BIND:=0.0.0.0}"
+    : "${VISION_BIND:=0.0.0.0}"
 
     set_kv SPOKE_NAME "$SPOKE_NAME"
     set_kv SPOKE_TAGS "$SPOKE_TAGS"
@@ -385,6 +391,13 @@ pre_migration() {
 deploy() {
     log "──────────────  Deploy  ──────────────"
     cd "$INSTALL_DIR"
+
+    # Codex-Befund P2: spoke-agent erwartet compose.yaml in /etc/spoke-stack/
+    # (DOCKER_COMPOSE_PATH env-var verweist darauf). Bisher kopierte nur
+    # install.sh die Files; bootstrap.sh muss das auch tun.
+    $SUDO cp -f "$INSTALL_DIR/compose.yaml" /etc/spoke-stack/compose.yaml
+    [[ -f "$INSTALL_DIR/compose.gpu.yaml" ]] && $SUDO cp -f "$INSTALL_DIR/compose.gpu.yaml" /etc/spoke-stack/compose.gpu.yaml
+    [[ -f "$INSTALL_DIR/compose.amd.yaml" ]] && $SUDO cp -f "$INSTALL_DIR/compose.amd.yaml" /etc/spoke-stack/compose.amd.yaml
 
     # compose-Datei + GPU-Override
     local args=(-f compose.yaml)
@@ -465,18 +478,26 @@ validate_deploy() {
     fi
 
     # 6. Spoke beim Router registriert? (15s warten + check)
+    # Codex-Befund P2: /admin/api/spokes braucht Bearer-Auth. Wenn wir kein
+    # Admin-Token haben, ist der Check best-effort — kein hartes Fail.
     sleep 15
     local url="${ROUTER_URL:-http://100.99.159.80:7842}"
-    local raw_spokes registered=""
-    raw_spokes=$(curl -s --max-time 5 "${url}/admin/api/spokes" 2>/dev/null || true)
+    local raw_spokes registered="" auth_header=""
+    if [[ -n "${ROUTER_ADMIN_TOKEN:-}" ]]; then
+        auth_header="-H Authorization: Bearer ${ROUTER_ADMIN_TOKEN}"
+    fi
+    raw_spokes=$(curl -s --max-time 5 $auth_header "${url}/admin/api/spokes" 2>/dev/null || true)
     if [[ -n "$raw_spokes" && "${raw_spokes:0:1}" == "[" ]]; then
         registered=$(echo "$raw_spokes" | jq -r --arg n "$SPOKE_NAME" '.[]? | select(.name==$n) | "\(.status)|\(.source)"' 2>/dev/null | head -1 || true)
-    fi
-    if [[ -n "$registered" ]]; then
-        ok "Spoke '$SPOKE_NAME' im Router: $registered"
+        if [[ -n "$registered" ]]; then
+            ok "Spoke '$SPOKE_NAME' im Router: $registered"
+        else
+            warn "Spoke '$SPOKE_NAME' nicht im Router gefunden — Token/Connectivity pruefen."
+            errors=$((errors+1))
+        fi
     else
-        warn "Spoke '$SPOKE_NAME' nicht im Router gefunden — Token/Connectivity pruefen."
-        errors=$((errors+1))
+        # Auth fehlte oder Router antwortet anders — kein hartes Fail.
+        warn "Router-Spoke-Liste nicht zugaenglich (kein ROUTER_ADMIN_TOKEN?). Spoke-Agent-Logs pruefen."
     fi
 
     # 7. E2E-Test: kleines Modell-Inferenz wenn moeglich
