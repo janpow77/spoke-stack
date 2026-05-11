@@ -1,0 +1,142 @@
+# Spoke-Stack — laeuft pro Host (NUC, evo-x2, Desktop, MacBook).
+#
+# Vier Services:
+#  - ollama          (LLM-Inference)
+#  - reranker-service (Cross-Encoder; rerank-Capability)
+#  - vision-service  (Image-Understanding; PLACEHOLDER bis Code fertig)
+#  - spoke-agent     (Discovery + Heartbeat + Admin-UI)
+#
+# Aufruf:
+#   CPU-only:   docker compose up -d
+#   Mit NVIDIA: docker compose -f compose.yaml -f compose.gpu.yaml up -d
+#
+# Konfig kommt aus /etc/spoke-stack/env (siehe .env.example).
+
+services:
+  # -------------------------------------------------------------------- ollama
+  ollama:
+    image: ollama/ollama:${OLLAMA_TAG:-latest}
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_BIND:-0.0.0.0}:11434:11434"
+    environment:
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-10m}"
+      OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-2}"
+      OLLAMA_FLASH_ATTENTION: "${OLLAMA_FLASH_ATTENTION:-1}"
+    volumes:
+      - /var/lib/ollama:/root/.ollama
+    env_file:
+      - path: /var/lib/spoke-agent/services/ollama.env
+        required: false
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # --------------------------------------------------------- reranker-service
+  reranker-service:
+    image: ghcr.io/janpow77/reranker-service:${RERANKER_TAG:-latest}
+    container_name: reranker-service
+    restart: unless-stopped
+    environment:
+      RERANKER_PORT: "8004"
+      RERANKER_DEVICE: "${RERANKER_DEVICE:-cpu}"
+      RERANKER_DEFAULT_MODEL: "${RERANKER_DEFAULT_MODEL:-BAAI/bge-reranker-v2-m3}"
+      RERANKER_PRELOAD_MODELS: "${RERANKER_PRELOAD_MODELS:-BAAI/bge-reranker-v2-m3}"
+      RERANKER_EAGER_LOAD: "true"
+      RERANKER_API_KEY: "${RERANKER_API_KEY:-}"
+      HF_HOME: "/data/hf_cache"
+    env_file:
+      - path: /var/lib/spoke-agent/services/reranker-service.env
+        required: false
+    volumes:
+      - /var/lib/reranker/data:/data
+    ports:
+      - "${RERANKER_BIND:-0.0.0.0}:8004:8004"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8004/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    mem_limit: 4g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ----------------------------------------------------------- vision-service
+  # PLACEHOLDER — wird vom parallelen Agenten gebaut. Kommentiert bis Image
+  # auf dem GHCR liegt. Nicht aus dem Stack loeschen — spoke-agent erwartet
+  # einen :8005-Service mit /health.
+  #
+  # vision-service:
+  #   image: ghcr.io/janpow77/vision-service:${VISION_TAG:-latest}
+  #   container_name: vision-service
+  #   restart: unless-stopped
+  #   environment:
+  #     VISION_PORT: "8005"
+  #     VISION_DEVICE: "${VISION_DEVICE:-cpu}"
+  #     VISION_API_KEY: "${VISION_API_KEY:-}"
+  #     HF_HOME: "/data/hf_cache"
+  #   env_file:
+  #     - path: /var/lib/spoke-agent/services/vision-service.env
+  #       required: false
+  #   volumes:
+  #     - /var/lib/vision/data:/data
+  #   ports:
+  #     - "${VISION_BIND:-0.0.0.0}:8005:8005"
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8005/health"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+  #     start_period: 120s
+  #   mem_limit: 6g
+
+  # ---------------------------------------------------------------- spoke-agent
+  spoke-agent:
+    image: ghcr.io/janpow77/spoke-agent:${SPOKE_AGENT_TAG:-latest}
+    container_name: spoke-agent
+    restart: unless-stopped
+    network_mode: host  # damit der Agent localhost:11434/8004/8005 erreicht
+    environment:
+      SPOKE_NAME: "${SPOKE_NAME:-}"
+      SPOKE_TAGS: "${SPOKE_TAGS:-}"
+      APP_ID: "${APP_ID:-}"
+      ROUTER_URL: "${ROUTER_URL:-http://100.99.159.80:8080}"
+      FALLBACK_ROUTER_URL: "${FALLBACK_ROUTER_URL:-}"
+      API_KEY: "${API_KEY:-}"
+      SPOKE_REGISTRATION_TOKEN: "${SPOKE_REGISTRATION_TOKEN:-}"
+      DOCKER_COMPOSE_PATH: "/etc/spoke-stack/compose.yaml"
+      SPOKE_AGENT_ADMIN_PASSWORD: "${SPOKE_AGENT_ADMIN_PASSWORD:-spoke-admin}"
+      SPOKE_AGENT_AUTH: "${SPOKE_AGENT_AUTH:-on}"
+      SPOKE_AGENT_PORT: "${SPOKE_AGENT_PORT:-7844}"
+      SPOKE_AGENT_STATE_DIR: "/data"
+    volumes:
+      - /var/lib/spoke-agent:/data
+      - /etc/spoke-stack:/etc/spoke-stack:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - ollama
+      - reranker-service
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${SPOKE_AGENT_PORT:-7844}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,37 @@
+# NVIDIA-Override fuer Spoke-Stack. Aufruf:
+#   docker compose -f compose.yaml -f compose.gpu.yaml up -d
+#
+# Voraussetzung: nvidia-container-toolkit + Docker GPU-Runtime auf dem Host.
+# Auf macOS (MacBook) NICHT verwenden — dort laeuft alles auf Metal/CPU.
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  reranker-service:
+    environment:
+      RERANKER_DEVICE: "cuda"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # vision-service:
+  #   environment:
+  #     VISION_DEVICE: "cuda"
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
