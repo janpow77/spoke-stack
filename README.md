@@ -36,7 +36,32 @@ Desktop, MacBook) deployt. Beinhaltet:
 Services unter `127.0.0.1:<port>` erreicht. Er greift via gemountetem
 `/var/run/docker.sock` auf die anderen Container zu (logs, restart, update).
 
-## Quick Start
+## Quick Start (One-Liner)
+
+```bash
+# Komplette Installation: Docker + Tailscale + nvidia-toolkit + Repo + compose up
+curl -fsSL https://raw.githubusercontent.com/janpow77/spoke-stack/master/bootstrap.sh | sudo bash
+```
+
+Mit vorgegebener Konfig:
+```bash
+sudo SPOKE_NAME=evo SPOKE_TAGS=gpu,linux \
+    ROUTER_URL=http://100.99.159.80:7842 \
+    SPOKE_REGISTRATION_TOKEN=… \
+    GHCR_TOKEN=… \
+    bash bootstrap.sh
+```
+
+Was `bootstrap.sh` macht:
+1. Docker + Compose-Plugin (via get.docker.com falls fehlt)
+2. Tailscale-Daemon installieren + `tailscale up` (falls fehlt)
+3. NVIDIA Container Toolkit (falls NVIDIA-GPU)
+4. GHCR-Login mit `GHCR_TOKEN` (optional bei public Packages)
+5. Repo klonen nach `/opt/spoke-stack`
+6. `/etc/spoke-stack/env` aus Template, Tailscale-IP als Bind-Default
+7. `install.sh` ausführen (GPU-Override automatisch detected)
+
+## Manuelle Installation (advanced)
 
 ```bash
 git clone https://github.com/janpow77/spoke-stack.git
