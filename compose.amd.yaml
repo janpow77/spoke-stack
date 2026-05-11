@@ -18,9 +18,13 @@ services:
     devices:
       - /dev/kfd
       - /dev/dri
+    # Docker resolved Group-Namen nicht immer korrekt (z.B. wenn Docker via
+     # Snap laeuft oder der Container init seine eigene /etc/group hat).
+     # Daher numerische GIDs — Bootstrap schreibt VIDEO_GID/RENDER_GID aus
+     # `getent group` ins env-File.
     group_add:
-      - video
-      - render
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-993}"
     # Sicherheitskontext: ROCm benoetigt Zugriff auf KFD-Compute-IOMMU.
     # `cap_add: SYS_PTRACE` ist fuer GPU-Profiling — nur wenn rocm-tools
     # ausgefuehrt werden sollen; default off.

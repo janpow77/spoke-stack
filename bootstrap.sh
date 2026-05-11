@@ -145,6 +145,8 @@ check_docker() {
 
 detect_gpu() {
     HAS_NVIDIA=0; HAS_AMD=0; GPU_TYPE="cpu"; GFX_VERSION=""
+    local _rocmtmp=""
+    trap '[[ -n "${_rocmtmp:-}" && -e "$_rocmtmp" ]] && rm -f "$_rocmtmp"' RETURN
     if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
         HAS_NVIDIA=1
         GPU_TYPE="nvidia"
@@ -166,11 +168,11 @@ detect_gpu() {
                 *) warn "nvidia-container-toolkit manuell installieren" ;;
             esac
         fi
-    elif command -v rocminfo >/dev/null 2>&1 && { rocminfo 2>/dev/null > /tmp/.rocminfo.$$ || true; grep -qE 'gfx[0-9]+' /tmp/.rocminfo.$$; }; then
+    elif command -v rocminfo >/dev/null 2>&1 && _rocmtmp=$(mktemp) && rocminfo > "$_rocmtmp" 2>/dev/null && grep -qE 'gfx[0-9]+' "$_rocmtmp"; then
         HAS_AMD=1
         GPU_TYPE="amd"
-        GFX_VERSION=$(grep -oE 'gfx[0-9]+' /tmp/.rocminfo.$$ | head -1)
-        rm -f /tmp/.rocminfo.$$
+        GFX_VERSION=$(grep -oE 'gfx[0-9]+' "$_rocmtmp" | head -1)
+        rm -f "$_rocmtmp"
         local gpu_name=$(lspci 2>/dev/null | grep -iE "vga|display|3d" | head -1 | cut -d: -f3- | xargs)
         ok "GPU: AMD $gpu_name ($GFX_VERSION) via ROCm"
         # /dev/kfd + /dev/dri Plausi
@@ -370,6 +372,13 @@ prepare_config() {
                 gfx1030|gfx1031|gfx1032) : "${HSA_OVERRIDE_GFX_VERSION:=10.3.0}" ;;
             esac
             [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]] && set_kv HSA_OVERRIDE_GFX_VERSION "$HSA_OVERRIDE_GFX_VERSION"
+            # GIDs fuer compose.amd.yaml — Docker resolved Group-Namen nicht
+            # immer (Snap-Docker, rootless, etc.). Daher Numeric.
+            local video_gid render_gid
+            video_gid=$(getent group video 2>/dev/null | cut -d: -f3 || true)
+            render_gid=$(getent group render 2>/dev/null | cut -d: -f3 || true)
+            [[ -n "$video_gid"  ]] && set_kv VIDEO_GID  "$video_gid"
+            [[ -n "$render_gid" ]] && set_kv RENDER_GID "$render_gid"
             ;;
     esac
     set_kv OLLAMA_NUM_PARALLEL "${OLLAMA_NUM_PARALLEL:-2}"
