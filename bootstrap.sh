@@ -54,6 +54,37 @@ elif command -v pacman >/dev/null 2>&1; then DISTRO=pacman
 else err "Unbekannter Paket-Manager. Manuelle Installation erforderlich."
 fi
 
+# ------------- Existing host-Ollama detection (Adopt-Mode) -------------------
+#
+# Wenn ein systemd-managed `ollama.service` laeuft, uebernehmen wir das
+# Modell-Verzeichnis in den Compose-Stack und stoppen+disable den Host-Service.
+# Damit migrieren wir bestehende Setups (NUC, evo2) ohne Modelle neu zu pullen.
+
+ADOPT_OLLAMA_DIR=""
+ADOPT_OLLAMA_USER=""
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ollama 2>/dev/null; then
+    log "Host-Ollama-Service erkannt — Adopt-Mode aktiv."
+    ADOPT_OLLAMA_USER="$(systemctl show -p User --value ollama 2>/dev/null || echo ollama)"
+    # Standard-Ablage je Distro / Setup
+    for candidate in \
+        "/usr/share/ollama/.ollama" \
+        "/var/lib/ollama" \
+        "/home/$ADOPT_OLLAMA_USER/.ollama" \
+        "/root/.ollama"; do
+        if [[ -d "$candidate/models" ]]; then
+            ADOPT_OLLAMA_DIR="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$ADOPT_OLLAMA_DIR" ]]; then
+        log "WARN: Host-Ollama laeuft, aber Modell-Verzeichnis nicht gefunden."
+        log "      Bitte OLLAMA_DATA_DIR manuell in /etc/spoke-stack/env setzen."
+    else
+        log "Modell-Verzeichnis: $ADOPT_OLLAMA_DIR ($($SUDO du -sh "$ADOPT_OLLAMA_DIR/models" 2>/dev/null | cut -f1))"
+    fi
+fi
+
+
 # ------------- Docker --------------------------------------------------------
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -182,6 +213,39 @@ set_kv SPOKE_TAGS "$SPOKE_TAGS"
 set_kv OLLAMA_BIND "$OLLAMA_BIND"
 set_kv RERANKER_BIND "$RERANKER_BIND"
 set_kv VISION_BIND "$VISION_BIND"
+
+# Adopt-Mode: bestehendes Modell-Verzeichnis in compose-Volume mounten +
+# Host-Service stoppen, sodass nur EIN Ollama laeuft (kein Port-Konflikt).
+if [[ -n "$ADOPT_OLLAMA_DIR" ]]; then
+    set_kv OLLAMA_DATA_DIR "$ADOPT_OLLAMA_DIR"
+    log "Stoppe + disable Host-Ollama-Service (Modelle bleiben in $ADOPT_OLLAMA_DIR)…"
+    $SUDO systemctl stop ollama || true
+    $SUDO systemctl disable ollama 2>/dev/null || true
+fi
+
+# GPU-Defaults pro Hardware-Klasse (User kann ueberschreiben via Env):
+if [[ $HAS_NVIDIA -eq 1 ]]; then
+    GPU_COUNT_DETECTED=$(nvidia-smi -L 2>/dev/null | wc -l)
+    : "${GPU_COUNT:=$GPU_COUNT_DETECTED}"
+    # VRAM total ueber alle GPUs in MB
+    VRAM_TOTAL_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk '{s+=$1} END {print s}')
+    if [[ "$VRAM_TOTAL_MB" -gt 24000 ]]; then
+        # >24GB: kann 35B-Modelle, 4 parallel
+        : "${OLLAMA_NUM_PARALLEL:=4}"
+        : "${OLLAMA_MAX_LOADED_MODELS:=3}"
+    elif [[ "$VRAM_TOTAL_MB" -gt 14000 ]]; then
+        # 14-24GB: 14B-Modelle gut, 2 parallel
+        : "${OLLAMA_NUM_PARALLEL:=2}"
+        : "${OLLAMA_MAX_LOADED_MODELS:=2}"
+    else
+        # <14GB: nur kleine Modelle, 1 parallel
+        : "${OLLAMA_NUM_PARALLEL:=1}"
+        : "${OLLAMA_MAX_LOADED_MODELS:=1}"
+    fi
+    set_kv GPU_COUNT "$GPU_COUNT"
+    set_kv OLLAMA_NUM_PARALLEL "$OLLAMA_NUM_PARALLEL"
+    set_kv OLLAMA_MAX_LOADED_MODELS "$OLLAMA_MAX_LOADED_MODELS"
+fi
 [[ -n "${ROUTER_URL:-}" ]] && set_kv ROUTER_URL "$ROUTER_URL"
 [[ -n "${FALLBACK_ROUTER_URL:-}" ]] && set_kv FALLBACK_ROUTER_URL "$FALLBACK_ROUTER_URL"
 [[ -n "${API_KEY:-}" ]] && set_kv API_KEY "$API_KEY"
