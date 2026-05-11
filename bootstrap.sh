@@ -166,10 +166,11 @@ detect_gpu() {
                 *) warn "nvidia-container-toolkit manuell installieren" ;;
             esac
         fi
-    elif command -v rocminfo >/dev/null 2>&1 && rocminfo 2>/dev/null | grep -qE 'gfx[0-9]+'; then
+    elif command -v rocminfo >/dev/null 2>&1 && { rocminfo 2>/dev/null > /tmp/.rocminfo.$$ || true; grep -qE 'gfx[0-9]+' /tmp/.rocminfo.$$; }; then
         HAS_AMD=1
         GPU_TYPE="amd"
-        GFX_VERSION=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]+' | head -1)
+        GFX_VERSION=$(grep -oE 'gfx[0-9]+' /tmp/.rocminfo.$$ | head -1)
+        rm -f /tmp/.rocminfo.$$
         local gpu_name=$(lspci 2>/dev/null | grep -iE "vga|display|3d" | head -1 | cut -d: -f3- | xargs)
         ok "GPU: AMD $gpu_name ($GFX_VERSION) via ROCm"
         # /dev/kfd + /dev/dri Plausi
