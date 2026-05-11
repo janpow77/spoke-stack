@@ -121,11 +121,16 @@ TS_IP="$($SUDO tailscale ip -4 2>/dev/null | head -1 || echo '')"
 [[ -z "$TS_IP" ]] && err "Tailscale-IP nicht ermittelbar. Setup haengt."
 log "Tailscale-IP: $TS_IP"
 
-# ------------- NVIDIA Container Toolkit (optional) ---------------------------
+# ------------- GPU-Detection (NVIDIA / AMD-ROCm / Intel / CPU-only) -----------
 
 HAS_NVIDIA=0
+HAS_AMD=0
+GPU_TYPE="cpu"   # cpu | nvidia | amd | intel
+GFX_VERSION=""
+
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
     HAS_NVIDIA=1
+    GPU_TYPE="nvidia"
     log "NVIDIA-GPU erkannt: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
     if ! docker info 2>/dev/null | grep -q nvidia; then
         log "NVIDIA-Container-Toolkit fehlt — installiere…"
@@ -144,6 +149,31 @@ if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
             *) log "Bitte nvidia-container-toolkit manuell installieren (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)" ;;
         esac
     fi
+elif command -v rocminfo >/dev/null 2>&1 && rocminfo 2>/dev/null | grep -q "GPU Agent"; then
+    HAS_AMD=1
+    GPU_TYPE="amd"
+    GFX_VERSION=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]+' | head -1)
+    GPU_NAME=$(lspci 2>/dev/null | grep -iE "vga|display|3d" | head -1 | cut -d: -f3- | xargs)
+    log "AMD-GPU erkannt: $GPU_NAME ($GFX_VERSION) via ROCm"
+    # /dev/kfd + /dev/dri muessen existieren
+    if [[ ! -e /dev/kfd ]] || [[ ! -e /dev/dri ]]; then
+        log "WARN: /dev/kfd oder /dev/dri fehlt — ROCm-Setup unvollstaendig."
+    fi
+    # User in video + render Group?
+    REAL_USER="${SUDO_USER:-$USER}"
+    for grp in video render; do
+        if ! groups "$REAL_USER" 2>/dev/null | grep -q "\b$grp\b"; then
+            log "Adding $REAL_USER zu Gruppe $grp…"
+            $SUDO usermod -aG "$grp" "$REAL_USER"
+            log "WARN: User muss sich neu einloggen damit $grp-Mitgliedschaft greift."
+        fi
+    done
+elif lspci 2>/dev/null | grep -qiE "intel.*arc|intel.*xe"; then
+    GPU_TYPE="intel"
+    log "Intel-Arc-GPU erkannt — Ollama-Vulkan-Backend wird genutzt."
+    log "WARN: Intel-Pfad ist experimentell. compose.intel.yaml steht noch aus."
+else
+    log "Keine dedizierte GPU erkannt — CPU-only Modus."
 fi
 
 # ------------- GHCR-Login (private Packages) ---------------------------------
@@ -194,13 +224,14 @@ set_kv() {
 
 # Default SPOKE_NAME = hostname wenn nicht gesetzt
 : "${SPOKE_NAME:=$(hostname -s)}"
-# Default Tags inkl. gpu/cpu
+# Default Tags inkl. GPU-Architektur
 if [[ -z "${SPOKE_TAGS:-}" ]]; then
-    if [[ $HAS_NVIDIA -eq 1 ]]; then
-        SPOKE_TAGS="gpu,linux,nvidia"
-    else
-        SPOKE_TAGS="cpu,linux"
-    fi
+    case "$GPU_TYPE" in
+        nvidia) SPOKE_TAGS="gpu,linux,nvidia" ;;
+        amd)    SPOKE_TAGS="gpu,linux,amd,rocm" ;;
+        intel)  SPOKE_TAGS="gpu,linux,intel" ;;
+        *)      SPOKE_TAGS="cpu,linux" ;;
+    esac
 fi
 
 # Default bind = Tailscale-IP (kein 0.0.0.0!)
@@ -224,28 +255,49 @@ if [[ -n "$ADOPT_OLLAMA_DIR" ]]; then
 fi
 
 # GPU-Defaults pro Hardware-Klasse (User kann ueberschreiben via Env):
-if [[ $HAS_NVIDIA -eq 1 ]]; then
-    GPU_COUNT_DETECTED=$(nvidia-smi -L 2>/dev/null | wc -l)
-    : "${GPU_COUNT:=$GPU_COUNT_DETECTED}"
-    # VRAM total ueber alle GPUs in MB
-    VRAM_TOTAL_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk '{s+=$1} END {print s}')
-    if [[ "$VRAM_TOTAL_MB" -gt 24000 ]]; then
-        # >24GB: kann 35B-Modelle, 4 parallel
-        : "${OLLAMA_NUM_PARALLEL:=4}"
-        : "${OLLAMA_MAX_LOADED_MODELS:=3}"
-    elif [[ "$VRAM_TOTAL_MB" -gt 14000 ]]; then
-        # 14-24GB: 14B-Modelle gut, 2 parallel
-        : "${OLLAMA_NUM_PARALLEL:=2}"
-        : "${OLLAMA_MAX_LOADED_MODELS:=2}"
-    else
-        # <14GB: nur kleine Modelle, 1 parallel
-        : "${OLLAMA_NUM_PARALLEL:=1}"
-        : "${OLLAMA_MAX_LOADED_MODELS:=1}"
-    fi
-    set_kv GPU_COUNT "$GPU_COUNT"
-    set_kv OLLAMA_NUM_PARALLEL "$OLLAMA_NUM_PARALLEL"
-    set_kv OLLAMA_MAX_LOADED_MODELS "$OLLAMA_MAX_LOADED_MODELS"
-fi
+case "$GPU_TYPE" in
+    nvidia)
+        GPU_COUNT_DETECTED=$(nvidia-smi -L 2>/dev/null | wc -l)
+        : "${GPU_COUNT:=$GPU_COUNT_DETECTED}"
+        # VRAM total ueber alle GPUs in MB
+        VRAM_TOTAL_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk '{s+=$1} END {print s}')
+        if [[ "$VRAM_TOTAL_MB" -gt 24000 ]]; then
+            : "${OLLAMA_NUM_PARALLEL:=4}"; : "${OLLAMA_MAX_LOADED_MODELS:=3}"
+        elif [[ "$VRAM_TOTAL_MB" -gt 14000 ]]; then
+            : "${OLLAMA_NUM_PARALLEL:=2}"; : "${OLLAMA_MAX_LOADED_MODELS:=2}"
+        else
+            : "${OLLAMA_NUM_PARALLEL:=1}"; : "${OLLAMA_MAX_LOADED_MODELS:=1}"
+        fi
+        set_kv GPU_COUNT "$GPU_COUNT"
+        ;;
+    amd)
+        # Unified-Memory: VRAM = System-RAM-Anteil. Strix Halo / Ryzen AI
+        # MAX+ haben 128GB+ Pool — wir lassen Ollama selbst pacen.
+        RAM_TOTAL_GB=$(awk '/MemTotal/{print int($2/1024/1024)}' /proc/meminfo)
+        if [[ "$RAM_TOTAL_GB" -gt 96 ]]; then
+            : "${OLLAMA_NUM_PARALLEL:=4}"; : "${OLLAMA_MAX_LOADED_MODELS:=4}"
+            log "AMD-iGPU mit ${RAM_TOTAL_GB}GB RAM-Pool — heavy-tier"
+        elif [[ "$RAM_TOTAL_GB" -gt 32 ]]; then
+            : "${OLLAMA_NUM_PARALLEL:=2}"; : "${OLLAMA_MAX_LOADED_MODELS:=2}"
+        else
+            : "${OLLAMA_NUM_PARALLEL:=1}"; : "${OLLAMA_MAX_LOADED_MODELS:=1}"
+        fi
+        # GFX-Version-Override (gfx1151 = Strix Halo, gfx1100 = RDNA3 dGPU…)
+        case "$GFX_VERSION" in
+            gfx1151) : "${HSA_OVERRIDE_GFX_VERSION:=11.5.1}" ;;
+            gfx1150) : "${HSA_OVERRIDE_GFX_VERSION:=11.5.0}" ;;
+            gfx1100|gfx1101|gfx1102) : "${HSA_OVERRIDE_GFX_VERSION:=11.0.0}" ;;
+            gfx1030|gfx1031|gfx1032) : "${HSA_OVERRIDE_GFX_VERSION:=10.3.0}" ;;
+            *) : "${HSA_OVERRIDE_GFX_VERSION:=}" ;;
+        esac
+        [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]] && set_kv HSA_OVERRIDE_GFX_VERSION "$HSA_OVERRIDE_GFX_VERSION"
+        ;;
+    intel|cpu)
+        : "${OLLAMA_NUM_PARALLEL:=1}"; : "${OLLAMA_MAX_LOADED_MODELS:=1}"
+        ;;
+esac
+set_kv OLLAMA_NUM_PARALLEL "$OLLAMA_NUM_PARALLEL"
+set_kv OLLAMA_MAX_LOADED_MODELS "$OLLAMA_MAX_LOADED_MODELS"
 [[ -n "${ROUTER_URL:-}" ]] && set_kv ROUTER_URL "$ROUTER_URL"
 [[ -n "${FALLBACK_ROUTER_URL:-}" ]] && set_kv FALLBACK_ROUTER_URL "$FALLBACK_ROUTER_URL"
 [[ -n "${API_KEY:-}" ]] && set_kv API_KEY "$API_KEY"
