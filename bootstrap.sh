@@ -248,14 +248,18 @@ check_existing_ollama() {
 check_spoke_name_unique() {
     [[ -z "${SPOKE_NAME:-}" ]] && SPOKE_NAME="$(hostname -s)"
     local url="${ROUTER_URL:-http://100.99.159.80:7842}"
-    local existing
-    existing=$(curl -s --max-time 3 "${url}/admin/api/spokes" 2>/dev/null \
-        | jq -r --arg n "$SPOKE_NAME" '.[]? | select(.name==$n) | .id' 2>/dev/null \
-        | head -1)
+    # /admin/api/spokes braucht Bearer-Auth — ohne Token geht's nicht.
+    # Wir versuchen den Call, scheitern stillschweigend wenn 401.
+    # `set -euo pipefail`-safe: alle Teile mit || true gewrappt.
+    local raw existing=""
+    raw=$(curl -s --max-time 3 "${url}/admin/api/spokes" 2>/dev/null || true)
+    if [[ -n "$raw" && "${raw:0:1}" == "[" ]]; then
+        existing=$(echo "$raw" | jq -r --arg n "$SPOKE_NAME" '.[]? | select(.name==$n) | .id' 2>/dev/null | head -1 || true)
+    fi
     if [[ -n "$existing" ]]; then
         warn "Spoke '$SPOKE_NAME' bereits im Router (id=$existing) — wird beim Heartbeat überschrieben."
     else
-        ok "Spoke-Name '$SPOKE_NAME' frei im Router"
+        ok "Spoke-Name '$SPOKE_NAME' frei im Router (oder Router-Auth fehlt — Spoke-Agent registriert beim Start)"
     fi
 }
 
@@ -463,9 +467,11 @@ validate_deploy() {
     # 6. Spoke beim Router registriert? (15s warten + check)
     sleep 15
     local url="${ROUTER_URL:-http://100.99.159.80:7842}"
-    local registered=$(curl -s --max-time 5 "${url}/admin/api/spokes" 2>/dev/null \
-        | jq -r --arg n "$SPOKE_NAME" '.[]? | select(.name==$n) | "\(.status)|\(.source)"' 2>/dev/null \
-        | head -1)
+    local raw_spokes registered=""
+    raw_spokes=$(curl -s --max-time 5 "${url}/admin/api/spokes" 2>/dev/null || true)
+    if [[ -n "$raw_spokes" && "${raw_spokes:0:1}" == "[" ]]; then
+        registered=$(echo "$raw_spokes" | jq -r --arg n "$SPOKE_NAME" '.[]? | select(.name==$n) | "\(.status)|\(.source)"' 2>/dev/null | head -1 || true)
+    fi
     if [[ -n "$registered" ]]; then
         ok "Spoke '$SPOKE_NAME' im Router: $registered"
     else
@@ -475,12 +481,19 @@ validate_deploy() {
 
     # 7. E2E-Test: kleines Modell-Inferenz wenn moeglich
     if [[ $model_count -gt 0 ]]; then
-        local smallest=$(curl -s http://localhost:11434/api/tags 2>/dev/null | jq -r '.models | sort_by(.size) | .[0].name' 2>/dev/null)
+        local tags_raw smallest=""
+        tags_raw=$(curl -s --max-time 5 http://localhost:11434/api/tags 2>/dev/null || true)
+        if [[ -n "$tags_raw" ]]; then
+            smallest=$(echo "$tags_raw" | jq -r '.models | sort_by(.size) | .[0].name' 2>/dev/null || true)
+        fi
         if [[ -n "$smallest" && "$smallest" != "null" ]]; then
             log "E2E-Test: ollama-Inferenz mit $smallest…"
-            local infer_ok=$(curl -s --max-time 30 -X POST http://localhost:11434/api/generate \
-                -d "{\"model\":\"$smallest\",\"prompt\":\"hi\",\"stream\":false,\"options\":{\"num_predict\":5}}" 2>/dev/null \
-                | jq -r '.done' 2>/dev/null)
+            local infer_raw infer_ok=""
+            infer_raw=$(curl -s --max-time 30 -X POST http://localhost:11434/api/generate \
+                -d "{\"model\":\"$smallest\",\"prompt\":\"hi\",\"stream\":false,\"options\":{\"num_predict\":5}}" 2>/dev/null || true)
+            if [[ -n "$infer_raw" ]]; then
+                infer_ok=$(echo "$infer_raw" | jq -r '.done' 2>/dev/null || true)
+            fi
             if [[ "$infer_ok" == "true" ]]; then
                 ok "Inferenz-Test passed ($smallest)"
             else
