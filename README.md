@@ -1,6 +1,7 @@
 # spoke-stack
 
 [![Compose smoketest](https://github.com/janpow77/spoke-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/janpow77/spoke-stack/actions/workflows/ci.yml)
+[![Lizenz: MIT](https://img.shields.io/badge/Lizenz-MIT-green)](LICENSE)
 
 **Docker-Compose-Stack für einen Spoke im LLM-Router-Verbund: Ollama, Reranker, Vision-Dienst und der [`spoke-agent`](https://github.com/janpow77/spoke-agent), der den Rechner beim zentralen [`llm-router`](https://github.com/janpow77/llm-router) anmeldet. Ein Stack pro Rechner, mit Overrides für NVIDIA und AMD-ROCm.**
 
@@ -10,7 +11,7 @@
 |---|---|---|---|
 | `ollama` | 11434 | `ollama/ollama` (`:rocm` bei AMD) | LLM-Inferenz und Embeddings |
 | `reranker-service` | 8004 | `ghcr.io/janpow77/reranker-service` | Cross-Encoder-Reranking (Default `BAAI/bge-reranker-v2-m3`) |
-| `vision-service` | 8005 | `ghcr.io/janpow77/vision-service` | Bildverständnis/OCR (Donut CORD-v2) <!-- TODO: compose.yaml nennt den Dienst im Kopf noch "PLACEHOLDER bis Code fertig", im Dienstblock aber Donut + Tesseract/EasyOCR – Stand klären --> |
+| `vision-service` | 8005 | `ghcr.io/janpow77/vision-service` | Beleg-Extraktion (Donut CORD-v2); Texterkennung mit Tesseract, optional EasyOCR |
 | `spoke-agent` | 7844 | `ghcr.io/janpow77/spoke-agent` | Discovery, Heartbeat zum Router, Admin-UI |
 
 - **Ein Befehl pro Rechner:** `install.sh` legt Konfiguration und Datenverzeichnisse an, erkennt die GPU und startet den Stack.
@@ -81,21 +82,24 @@ vision-service
 Für frische Linux-Rechner (apt, dnf oder pacman; unter macOS bricht das Skript ab – dort Docker Desktop plus `./install.sh`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/janpow77/spoke-stack/master/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/janpow77/spoke-stack/master/bootstrap.sh \
+  | sudo ROUTER_URL=http://<router-host>:7842 bash
 ```
+
+`ROUTER_URL` ist Pflicht: Ohne Wert (und ohne gesetzten Eintrag in einer vorhandenen `/etc/spoke-stack/env`) bricht der Pre-Flight ab.
 
 Mit vorgegebenen Werten:
 
 ```bash
 sudo SPOKE_NAME=<name> SPOKE_TAGS=gpu,linux \
-     ROUTER_URL=http://<router>:<port> \
+     ROUTER_URL=http://<router-host>:7842 \
      SPOKE_REGISTRATION_TOKEN=<token> \
      bash bootstrap.sh
 ```
 
 Ablauf laut Skript:
 
-1. **Pre-Flight** (Abbruch bei Fehler): bash ≥ 4, `curl`, `git`, `jq`; mindestens 20 GB frei unter `/var/lib`; Tailscale (wird bei Bedarf installiert und per `tailscale up` verbunden; ohne Tailscale-IP Abbruch); Erreichbarkeit des Routers und Belegung des Spoke-Namens (nur Warnung); Docker; GPU-Erkennung (NVIDIA, AMD, Intel, CPU) inklusive Installation des NVIDIA Container Toolkit bzw. Prüfung der ROCm-Geräte und der Gruppen `video`/`render`; Portbelegung; vorhandene Ollama-Installation; Registrierungstoken kein `CHANGEME`-Platzhalter (fehlt es, nur Warnung).
+1. **Pre-Flight** (Abbruch bei Fehler): bash ≥ 4, `curl`, `git`, `jq`; mindestens 20 GB frei unter `/var/lib`; Tailscale (wird bei Bedarf installiert und per `tailscale up` verbunden; ohne Tailscale-IP Abbruch); `ROUTER_URL` gesetzt (sonst Abbruch); Erreichbarkeit des Routers und Belegung des Spoke-Namens (nur Warnung); Docker; GPU-Erkennung (NVIDIA, AMD, Intel, CPU) inklusive Installation des NVIDIA Container Toolkit bzw. Prüfung der ROCm-Geräte und der Gruppen `video`/`render`; Portbelegung; vorhandene Ollama-Installation; Registrierungstoken kein `CHANGEME`-Platzhalter (fehlt es, nur Warnung).
 2. Optional `docker login ghcr.io` mit `GHCR_TOKEN` (`GHCR_USER`).
 3. Repo nach `/opt/spoke-stack` klonen bzw. aktualisieren.
 4. `/etc/spoke-stack/env` schreiben: Name, Tags je GPU-Typ, Bind-Adressen, `GPU_COUNT`, Parallelität nach VRAM/RAM, `HSA_OVERRIDE_GFX_VERSION` und Gruppen-IDs bei AMD.
@@ -106,8 +110,6 @@ Ablauf laut Skript:
 Schalter: `SKIP_PREFLIGHT=1`, `SKIP_VALIDATE=1`.
 
 > **Hinweis zur Sicherheit:** `bootstrap.sh` setzt `OLLAMA_BIND`, `RERANKER_BIND` und `VISION_BIND` auf `0.0.0.0`. Ollama hat keine eigene Authentifizierung. Ist `ufw` aktiv, beschränkt das Skript die Spoke-Ports auf das Tailscale-Netz (`100.64.0.0/10`); sonst sind die Ports im LAN erreichbar.
-
-<!-- TODO: bootstrap.sh prüft in check_ports und nennt in der Zusammenfassung Port 7700 für die Agent-UI, compose.yaml und install.sh verwenden 7844. Außerdem nutzt bootstrap.sh als ROUTER_URL-Default Port 7842, .env.example und compose.yaml Port 8080. -->
 
 </details>
 
@@ -121,7 +123,7 @@ Vorlage ist [`.env.example`](.env.example). Wichtige Variablen:
 | `SPOKE_NAME` | — (pro Rechner eindeutig) | Name des Spokes im Router |
 | `SPOKE_TAGS` | — | Tags, kommagetrennt (z. B. `gpu,linux`) |
 | `APP_ID` | — | optionale App-ID vom Router |
-| `ROUTER_URL` | interne Adresse <!-- TODO: Default in .env.example/compose.yaml ist eine private Netzadresse; immer setzen --> | Primärer Router |
+| `ROUTER_URL` | — (Pflicht; Vorlage `CHANGEME-http://<router-host>:7842`, Compose-Fallback `http://localhost:7842`) | Primärer Router; der `llm-router` lauscht auf Port 7842 |
 | `FALLBACK_ROUTER_URL` | — | Ausweich-Router nach 3 Fehlschlägen |
 | `API_KEY` | — | Bearer-Token für den Router |
 | `SPOKE_REGISTRATION_TOKEN` | — | Header `X-Spoke-Token` bei der Registrierung |
@@ -184,5 +186,4 @@ Manuell mit GPU starten: `docker compose -f compose.yaml -f compose.gpu.yaml up 
 
 ## Lizenz
 
-<!-- TODO: Keine LICENSE-Datei im Repo. -->
-Keine Lizenzdatei vorhanden.
+Veröffentlicht unter der [MIT-Lizenz](LICENSE).

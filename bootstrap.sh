@@ -2,17 +2,19 @@
 # Spoke-Stack Bootstrap mit Pre-Flight + Post-Deploy-Validation + Rollback.
 #
 # Nutzung:
-#   curl -fsSL https://raw.githubusercontent.com/janpow77/spoke-stack/master/bootstrap.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/janpow77/spoke-stack/master/bootstrap.sh \
+#     | sudo ROUTER_URL=http://<router-host>:7842 bash
 #
 # ENV-Overrides:
-#   SPOKE_NAME, SPOKE_TAGS, ROUTER_URL, SPOKE_REGISTRATION_TOKEN,
+#   ROUTER_URL (Pflicht, z. B. http://<router-host>:7842; alternativ aus
+#   vorhandenem /etc/spoke-stack/env), SPOKE_NAME, SPOKE_TAGS, SPOKE_REGISTRATION_TOKEN,
 #   GHCR_TOKEN, GHCR_USER, EDITOR, SKIP_PREFLIGHT=1, SKIP_VALIDATE=1
 #
 # Pre-Flight-Checks (Abort bei Fail):
 #   1. Root/sudo, bash 4+, curl, jq
 #   2. Disk-Space >= 20GB frei
 #   3. Tailscale up, IP da
-#   4. Router-URL erreichbar
+#   4. Router-URL gesetzt und erreichbar
 #   5. SPOKE_NAME nicht schon im Router belegt
 #   6. Ports 11434/8004/8005/7844 frei (oder Adopt-Service)
 #   7. Docker daemon running
@@ -112,8 +114,20 @@ check_tailscale() {
     ok "Tailscale verbunden: $TS_IP"
 }
 
+# ROUTER_URL hat keinen eingebauten Default mehr: aus der Umgebung oder aus
+# einer vorhandenen $ENV_FILE uebernehmen (CHANGEME-Platzhalter zaehlt nicht).
+resolve_router_url() {
+    if [[ -z "${ROUTER_URL:-}" && -f "$ENV_FILE" ]]; then
+        local from_env
+        from_env="$($SUDO grep -E '^ROUTER_URL=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+        [[ -n "$from_env" && "$from_env" != CHANGEME* ]] && ROUTER_URL="$from_env"
+    fi
+    return 0
+}
+
 check_router() {
-    local url="${ROUTER_URL:-http://100.99.159.80:7842}"
+    [[ -n "${ROUTER_URL:-}" ]] || err "ROUTER_URL nicht gesetzt — z. B. ROUTER_URL=http://<router-host>:7842 mitgeben."
+    local url="$ROUTER_URL"
     local status
     status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${url}/admin/api/health" 2>&1 || echo "000")
     if [[ "$status" =~ ^[23] ]]; then
@@ -204,7 +218,7 @@ detect_gpu() {
 }
 
 check_ports() {
-    local ports=(11434 8004 7700 7844)
+    local ports=(11434 8004 8005 7844)
     local conflicts=()
     for port in "${ports[@]}"; do
         if ss -tlnp 2>/dev/null | grep -qE ":${port}\s"; then
@@ -219,7 +233,7 @@ check_ports() {
     if [[ ${#conflicts[@]} -gt 0 ]]; then
         err "Port-Konflikte: ${conflicts[*]} — bitte vorher freigeben."
     fi
-    ok "Ports 11434/8004/7700/7844 frei (oder von ollama-service belegt)"
+    ok "Ports 11434/8004/8005/7844 frei (oder von ollama-service belegt)"
 }
 
 check_existing_ollama() {
@@ -250,7 +264,7 @@ check_existing_ollama() {
 
 check_spoke_name_unique() {
     [[ -z "${SPOKE_NAME:-}" ]] && SPOKE_NAME="$(hostname -s)"
-    local url="${ROUTER_URL:-http://100.99.159.80:7842}"
+    local url="${ROUTER_URL:-http://localhost:7842}"
     # /admin/api/spokes braucht Bearer-Auth — ohne Token geht's nicht.
     # Wir versuchen den Call, scheitern stillschweigend wenn 401.
     # `set -euo pipefail`-safe: alle Teile mit || true gewrappt.
@@ -312,7 +326,7 @@ prepare_config() {
     fi
     # Bind-Adressen — Codex hat zwei sich widersprechende P1 gefunden:
     #   - 127.0.0.1 only: spoke-agent (host-network) erreicht zwar localhost,
-    #     aber Router von CCX23 erreicht den Spoke nicht im Tailnet.
+    #     aber der zentrale Router erreicht den Spoke nicht im Tailnet.
     #   - 0.0.0.0: Inference-API auch im LAN erreichbar (kein Auth in ollama!).
     #
     # Pragmatischer Default: 0.0.0.0 + Firewall-Lockdown auf Tailscale-Range.
@@ -535,7 +549,7 @@ validate_deploy() {
     # Codex-Befund P2: /admin/api/spokes braucht Bearer-Auth. Wenn wir kein
     # Admin-Token haben, ist der Check best-effort — kein hartes Fail.
     sleep 15
-    local url="${ROUTER_URL:-http://100.99.159.80:7842}"
+    local url="${ROUTER_URL:-http://localhost:7842}"
     local raw_spokes registered=""
     local -a auth_args=()
     if [[ -n "${ROUTER_ADMIN_TOKEN:-}" ]]; then
@@ -659,11 +673,11 @@ print_summary() {
     log "  Spoke-Stack ist installiert."
     log "  Konfig:      $ENV_FILE"
     log "  Tailscale:   $TS_IP"
-    log "  Spoke-Agent: http://$TS_IP:7700/admin/"
+    log "  Spoke-Agent: http://$TS_IP:${SPOKE_AGENT_PORT:-7844}/admin/"
     log ""
     log "  Naechste Schritte:"
     log "    1. Im llm-router-Admin Spoke pruefen:"
-    log "       ${ROUTER_URL:-http://100.99.159.80:7842}/admin/api/spokes"
+    log "       ${ROUTER_URL:-http://localhost:7842}/admin/api/spokes"
     log "    2. Logs: sudo docker compose -f /etc/spoke-stack/compose.yaml logs -f"
     log "    3. (optional) spoke-widget Tray-App:"
     log "       https://github.com/janpow77/spoke-widget/releases/latest"
@@ -677,6 +691,7 @@ print_summary() {
 
 main() {
     setup_sudo_and_distro
+    resolve_router_url
     [[ "${SKIP_PREFLIGHT:-0}" != "1" ]] && preflight_check
     ghcr_login_if_token
     clone_or_pull_repo
