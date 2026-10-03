@@ -1,9 +1,9 @@
-# Spoke-Stack — laeuft pro Host (NUC, evo-x2, Desktop, MacBook).
+# Spoke-Stack — laeuft pro Host (GPU-Server, Desktop, Laptop).
 #
 # Vier Services:
 #  - ollama          (LLM-Inference)
 #  - reranker-service (Cross-Encoder; rerank-Capability)
-#  - vision-service  (Image-Understanding; PLACEHOLDER bis Code fertig)
+#  - vision-service  (OCR + Beleg-Extraktion: Donut CORD-v2, Tesseract/EasyOCR)
 #  - spoke-agent     (Discovery + Heartbeat + Admin-UI)
 #
 # Aufruf:
@@ -120,7 +120,7 @@ services:
       SPOKE_NAME: "${SPOKE_NAME:-}"
       SPOKE_TAGS: "${SPOKE_TAGS:-}"
       APP_ID: "${APP_ID:-}"
-      ROUTER_URL: "${ROUTER_URL:-http://100.99.159.80:8080}"
+      ROUTER_URL: "${ROUTER_URL:-http://localhost:7842}"
       FALLBACK_ROUTER_URL: "${FALLBACK_ROUTER_URL:-}"
       API_KEY: "${API_KEY:-}"
       SPOKE_REGISTRATION_TOKEN: "${SPOKE_REGISTRATION_TOKEN:-}"
