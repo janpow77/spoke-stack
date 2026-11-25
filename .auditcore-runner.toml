@@ -1,0 +1,7 @@
+[pruefprofile.repository]
+werkzeuge = ["gitleaks"]
+ausloeser = ["lokal"]
+autofix = false
+
+[pruefprofile.repository.werkzeug.gitleaks]
+befehl = ["gitleaks", "dir", ".", "--no-banner", "--redact", "--report-format", "json", "--report-path", "{ausgabe}", "--exit-code", "0"]
